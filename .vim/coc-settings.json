@@ -1,0 +1,4 @@
+{
+	"coc.preferences.formatOnSaveFiletypes": ["c", "cpp"],
+	"codeLens.enable": true,
+}
