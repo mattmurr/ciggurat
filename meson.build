@@ -9,7 +9,7 @@ if get_option('buildtype').startswith('debug')
 
 	# Enable sanitizers for clang and gcc.
 	if cc.get_id() == 'clang' or cc.get_id() == 'gcc'
-		extra_args = ['-fsanitize=address', '-fno-omit-frame-pointer']
+		extra_args = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
 	endif
 endif
 

@@ -10,9 +10,11 @@ int main() {
   assert(w != NULL);
 
   TypeDesc int_desc = {"int", sizeof(int), _Alignof(int)};
+  TypeDesc float_desc = {"float", sizeof(float), _Alignof(float)};
   assert(!cig_world_register_type(w, &int_desc));
+  assert(!cig_world_register_type(w, &float_desc));
 
-  SystemDesc test_system_desc = {"test", "int", test};
+  SystemDesc test_system_desc = {"test", "int, float, !null, null", .fn = test};
   assert(!cig_world_register_system(w, &test_system_desc));
 
   cig_world_deinit(w);
