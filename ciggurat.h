@@ -24,6 +24,6 @@ void cig_world_deinit(World *w);
 World *cig_world_init();
 int cig_world_register_type(World *w, TypeDesc *desc);
 int cig_world_register_system(World *w, SystemDesc *desc);
-const Entity *cig_world_spawn(World *w, size_t count, char *types);
+const Entity *cig_world_spawn(World *w, size_t count, const char *types);
 
 #endif

@@ -6,13 +6,7 @@ cc = meson.get_compiler('c')
 if get_option('buildtype').startswith('debug')
 	# Define DEBUG if we are building with debug mode.
   add_project_arguments('-DDEBUG', language : 'c')
-
-	# Enable sanitizers for clang and gcc.
-	if cc.get_id() == 'clang' or cc.get_id() == 'gcc'
-		extra_args = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer']
-	endif
 endif
-
 
 ciggurat_inc = include_directories('.')
 

@@ -54,7 +54,7 @@ struct system {
 
   // An array of type ids that this system operates on so we know the order in
   // which the types were defined.
-  size_t *types;
+  int32_t *types;
 
   // Requirements for the system to match with a storage/entity.
   Bitset must_have, must_not_have;
@@ -98,7 +98,7 @@ static void system_deinit(struct system *system) {
 
 // Splits a comma-seperated string of types into an array of token strings.
 // Must also provide a size_t pointer for the size of the array returned.
-static char **tokenize(char *str, size_t *size) {
+static char **tokenize(const char *str, size_t *size) {
   char **result = NULL;
 
   // Duplicate types_str and remove any spaces from the str first.
@@ -162,12 +162,101 @@ err:
   return NULL; // Return zero, indicating an empty result.
 }
 
+static int generate_system_masks(Bitset *masks, const char *type,
+                                 const char *token, int32_t id, void *e) {
+  // We passed a pointer to the system's `types` field
+  int32_t **types = e;
+
+  // `masks`[0] is must_have
+  // `masks`[1] is must_not_have
+
+  // Check the first character in the token
+  switch (token[0]) {
+
+  // Does it begin with an exclamation mark
+  case '!':
+    if (strcmp(&token[1], type) == 0) {
+      bitset_incl(&masks[1], id);
+      *(*types)++ = id;
+
+      return EXIT_SUCCESS;
+    }
+    break;
+
+  default:
+    if (strcmp(token, type) == 0) {
+      bitset_incl(&masks[0], id);
+      *(*types)++ = id;
+
+      return EXIT_SUCCESS;
+    }
+    break;
+  }
+
+  return EXIT_FAILURE;
+}
+
+static int populate_mask(World *w, Bitset *mask,
+                         int (*f)(Bitset *, const char *, const char *, int32_t,
+                                  void *),
+                         const char *types_str, void *e) {
+  // If tokens are not already initialized then we will tokenize and return.
+  size_t size = 0;
+  char **tokens = tokenize(types_str, &size);
+  if (!tokens)
+    return EXIT_FAILURE;
+
+  int result = EXIT_SUCCESS;
+
+  // `size` cannot be more than the count of registered types
+  if (size > vector_len(&w->types)) {
+
+    result = EXIT_FAILURE;
+#ifdef DEBUG
+    fprintf(stderr,
+            "%s(): There are more types requested than types registered in the "
+            "world. [%s]\n.",
+            __func__, types_str);
+#endif
+
+  } else {
+    TypeDesc *types = w->types.data;
+    for (size_t i = 0; i < size; i++) {
+      for (size_t j = 0; j < vector_len(&w->types); j++)
+        // Call the `f` function pointer to generate the mask/s
+        if (!f(mask, types[j].identifier, tokens[i], j, e))
+          goto next;
+
+      result = EXIT_FAILURE;
+#ifdef DEBUG
+      fprintf(
+          stderr,
+          "%s(): SystemDesc `requirements` required type (%s) does not exist "
+          "in the world.\n",
+          __func__, tokens[i]);
+#endif
+
+    next:;
+    }
+  }
+
+  // Ensure that we free the tokens
+  for (size_t i = 0; i < size; i++)
+    free(tokens[i]);
+  free(tokens);
+
+  return result;
+}
+
 static int system_init(World *w, struct system *result, SystemDesc *desc) {
   *result = (struct system){0};
 
+  // Loop through all existing systems to ensure that there is not already a
+  // system registered with the same identifier
   SystemDesc *systems = w->systems.data;
   for (size_t i = 0; i < vector_len(&w->systems); i++)
     if (strcmp(systems[i].identifier, desc->identifier) == 0) {
+
 #ifdef DEBUG
       fprintf(stderr, "%s(): System with identifier already registered(%s).\n",
               __func__, desc->identifier);
@@ -175,83 +264,41 @@ static int system_init(World *w, struct system *result, SystemDesc *desc) {
       return EXIT_FAILURE;
     }
 
-  // Check the system type requirements are satisfied.
-  // Tokenize the desc->must_have string.
-  size_t size = 0;
-  char **tokens = tokenize(desc->requirements, &size);
-  if (!tokens)
-    return EXIT_FAILURE;
-
   result->identifier = strdup(desc->identifier);
   if (!result->identifier)
-    goto err;
+    return EXIT_FAILURE;
 
-  result->types = calloc(size, sizeof(size_t));
+  size_t registered_type_count = vector_len(&w->types);
+
+  // TODO Instead of allocating the types array directly, pass a Vector into the
+  // `populate_mask()` function.
+  // TODO Implement Vector to array and trim helpers in mylib.
+
+  // Allocate memory for the `types` array.
+  size_t capacity = registered_type_count * sizeof(int32_t);
+  result->types = malloc(capacity);
   if (!result->types)
     goto err;
+  // Set the values to -1.
+  memset(result->types, -1, capacity);
 
   // Initialize the masks.
-  {
-    size_t registered_type_count = vector_len(&w->types);
-    if (bitset_init(&result->must_have, registered_type_count) ||
-        bitset_init(&result->must_not_have, registered_type_count))
-      goto err;
-  }
+  if (bitset_init(&result->must_have, registered_type_count) ||
+      bitset_init(&result->must_not_have, registered_type_count))
+    goto err;
 
-  {
-    // Ensure each type exists in the world.
-    int success = 1;
-    TypeDesc *types = w->types.data;
-    for (size_t i = 0; i < size; i++) {
-      for (size_t j = 0; j < vector_len(&w->types); j++) {
-        switch (tokens[i][0]) {
+  // Create an array with both masks to pass into `populate_mask()`
+  Bitset masks[2] = {result->must_have, result->must_not_have};
+  // and a copy of the pointer for the types array.
+  int32_t *types = result->types;
 
-        // Check for tokens beginning with an exclamation mark.
-        case '!':
-          if (strcmp(&tokens[i][1], types[j].identifier) == 0) {
-            bitset_incl(&result->must_not_have, j);
-            result->types[i] = j;
-            goto next_token;
-          }
-          break;
-
-          // Any other tokens.
-        default:
-          if (strcmp(tokens[i], types[j].identifier) == 0) {
-            bitset_incl(&result->must_have, j);
-            result->types[i] = j;
-            goto next_token;
-          }
-          break;
-        }
-      }
-      success = 0;
-#ifdef DEBUG
-      fprintf(stderr,
-              "%s(): SystemDesc `requirements` required type (%s) does not "
-              "exist in the "
-              "world.\n",
-              __func__, tokens[i]);
-#endif
-    next_token:;
-    }
-
-    // If we failed somewhere then just exit quickly.
-    if (!success)
-      goto err;
-  }
-
-  for (size_t i = 0; i < size; i++)
-    free(tokens[i]);
-  free(tokens);
+  if (populate_mask(w, masks, generate_system_masks, desc->requirements,
+                    &types))
+    goto err;
 
   return EXIT_SUCCESS;
 
 err:
-  for (size_t i = 0; i < size; i++)
-    free(tokens[i]);
-  free(tokens);
-
   system_deinit(result);
 
   return EXIT_FAILURE;
@@ -367,4 +414,21 @@ int cig_world_register_system(World *w, SystemDesc *desc) {
 #endif
 
   return EXIT_SUCCESS;
+}
+
+const Entity *cig_world_spawn(World *w, size_t count, const char *types) {
+  assert(w != NULL);
+  assert(types != NULL);
+
+  // Check the given types.
+  /*Bitset mask;*/
+  /*if (gen_mask(w, &mask, types))*/
+  /*return NULL;*/
+
+  /*// Resize the last_spawned array.*/
+  /*Entity *result = realloc(w->last_spawned, sizeof(Entity) * count);*/
+  /*if (!result) {*/
+  /*bitset_deinit(&mask);*/
+  /*return NULL;*/
+  /*}*/
 }

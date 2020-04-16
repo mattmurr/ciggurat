@@ -14,7 +14,7 @@ int main() {
   assert(!cig_world_register_type(w, &int_desc));
   assert(!cig_world_register_type(w, &float_desc));
 
-  SystemDesc test_system_desc = {"test", "int, float, !null, null", .fn = test};
+  SystemDesc test_system_desc = {"test", "int, float", .fn = test};
   assert(!cig_world_register_system(w, &test_system_desc));
 
   cig_world_deinit(w);
