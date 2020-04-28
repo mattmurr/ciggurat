@@ -1,3 +1,3 @@
 [wrap-git]
-url = https://git.compti.me/mylib
-revision = head
+url = https://github.com/mattmurr/mylib
+revision = master

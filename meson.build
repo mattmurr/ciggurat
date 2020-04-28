@@ -8,6 +8,9 @@ if get_option('buildtype').startswith('debug')
   add_project_arguments('-DDEBUG', language : 'c')
 endif
 
+# Define _POSIX_C_SOURCE
+add_project_arguments('-D_POSIX_C_SOURCE=200809L', language: 'c')
+
 ciggurat_inc = include_directories('.')
 
 # Dependencies
