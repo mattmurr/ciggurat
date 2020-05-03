@@ -92,17 +92,20 @@ struct storage {
 };
 
 struct system {
-  // An string identifier/name for the system used for the hash.
+  // An string identifier/name for the system used for the hash
   char *identifier;
 
   // An array of type ids that this system operates on so we know the order in
-  // which the types were defined.
+  // which the types were defined
   int32_t *types;
 
-  // Requirements for the system to match with a storage/entity.
+  // How many types the system operates on
+  size_t types_len;
+
+  // Requirements for the system to match with a storage/entity
   Bitset must_have, must_not_have;
 
-  // Contains storages that have matched with this system.
+  // Contains storages that have matched with this system
   HashMap storages;
 
   SystemFn fn;
@@ -114,7 +117,7 @@ typedef struct World {
   // Holds the storage for each used combination of types.
   HashMap storages;
   // Holds all of the registered systems.
-  Vector systems;
+  HashMap systems;
 
   // Keep track of the next Entity ID to use.
   Entity next_entity;
@@ -125,18 +128,6 @@ typedef struct World {
   // Runtime allocated array of the last entities that were spawned.
   Entity *last_spawned;
 } World;
-
-static uint32_t system_hash(const void *system_ptr) {
-  const struct system *system = system_ptr;
-  return fnv1a_32_hash((const uint8_t *)system->identifier,
-                       strlen(system->identifier) + 1);
-}
-
-static int system_eql(const void *a, const void *b) {
-  // a and b are of the type const struct *system.
-  return strcmp(((const struct system *)a)->identifier,
-                ((const struct system *)b)->identifier) == 0;
-}
 
 // TODO Aligned alloc
 static int region_init(struct region *result, size_t alignment) {
@@ -269,6 +260,18 @@ static int calculate_layout(World *w, struct storage_layout *layout,
   return EXIT_SUCCESS;
 }
 
+static uint32_t system_hash(const void *system_ptr) {
+  const struct system *system = *(struct system **)system_ptr;
+  return fnv1a_32_hash((const uint8_t *)system->identifier,
+                       strlen(system->identifier) + 1);
+}
+
+static int system_eql(const void *a_ptr, const void *b_ptr) {
+  const struct system *a = *(const struct system **)a_ptr;
+  const struct system *b = *(const struct system **)b_ptr;
+  return strcmp(a->identifier, b->identifier) == 0;
+}
+
 static int storage_init(World *w, struct storage *result, Bitset mask) {
   *result = (struct storage){0};
 
@@ -278,7 +281,7 @@ static int storage_init(World *w, struct storage *result, Bitset mask) {
     goto err;
 
   if (hash_map_init(&result->systems, system_hash, system_eql,
-                    sizeof(struct system), 0))
+                    sizeof(struct system *), 0))
     goto err;
 
   if (calculate_layout(w, &result->layout, mask))
@@ -330,29 +333,44 @@ static void system_deinit(struct system *system) {
 
 static int is_match(const Bitset mask, const Bitset must_have,
                     const Bitset must_not_have) {
-  return (!bitset_intersects(&mask, &must_not_have)) &&
-         bitset_is_proper_subset(&mask, &must_have);
+  return !bitset_intersects(&mask, &must_not_have) &&
+         bitset_is_subset(&must_have, &mask);
 }
 
 static int storage_find_matches(World *w, struct storage *storage) {
-  struct system *systems = w->systems.data;
-  for (size_t i = 0; i < vector_len(&w->systems); i++) {
-    if (!is_match(storage->mask, systems[i].must_have,
-                  systems[i].must_not_have))
+  HashMapIterator it = hash_map_iter(&w->systems);
+  const HashMapKV *kv;
+  while ((kv = hash_map_next(&it))) {
+    struct system *system = kv->value;
+    if (!is_match(storage->mask, system->must_have, system->must_not_have))
       continue;
 
-    if (hash_map_put(&storage->systems, &systems[i], NULL) ||
-        hash_map_put(&systems[i].storages, storage, NULL)) {
-      size_t j = i;
-      while (j > 0) {
-        hash_map_delete(&storage->systems, &systems[j]);
-        hash_map_delete(&systems[j].storages, storage);
-        j--;
-      }
-      return EXIT_FAILURE;
-    }
+    if (hash_map_put(&storage->systems, &system, NULL) ||
+        hash_map_put(&system->storages, &storage, NULL))
+      goto err;
+
+#ifdef DEBUG
+    // TODO Also print out the IDs of types that are contained the storage
+    printf("%s(): Storage matched with system (%s).\n", __func__,
+           system->identifier);
+#endif
   }
   return EXIT_SUCCESS;
+
+err:
+  // Reset the iterator back to the first kv
+  it = hash_map_iter(it.map);
+  const HashMapKV *target = kv;
+  while ((kv = hash_map_next(&it))) {
+    struct system *system = kv->value;
+    hash_map_delete(&storage->systems, system);
+    hash_map_delete(&system->storages, storage);
+
+    if (kv == target)
+      break;
+  }
+
+  return EXIT_FAILURE;
 }
 
 static struct storage *get_storage(World *w, Bitset mask) {
@@ -372,7 +390,10 @@ static struct storage *get_storage(World *w, Bitset mask) {
 
   hash_map_kv_assign(&w->storages, kv, &storage);
 
-  storage_find_matches(w, kv->value);
+  if (storage_find_matches(w, kv->value)) {
+    hash_map_delete(&w->storages, &mask);
+    return NULL;
+  }
 
   return kv->value;
 }
@@ -525,14 +546,13 @@ storage_regions_request_commit(struct storage_regions_request *request,
   vector_deinit(&request->regions);
 }
 
-// Count how many types should be in this string of types by counting commas + 1
-static int count_types(const char *types_str) {
+// Count the instances of a character within the string
+static int count_char(const char *str, const char c) {
   size_t result;
-  char c;
-  // Checks if the current char is comma
-  for (result = 0; (c = types_str[result]); c == ',' ? result++ : *types_str++)
+  char curr;
+  for (result = 0; (curr = str[result]); curr == c ? result++ : *str++)
     ;
-  return result + 1;
+  return result;
 }
 
 // Splits a comma-seperated string of types into an array of token strings
@@ -662,7 +682,6 @@ static int generate_system_masks(Bitset *masks, const char *type,
   case '!':
     if (strcmp(&token[1], type) == 0) {
       bitset_incl(&masks[1], id);
-      *(*types)++ = id;
 
       return EXIT_SUCCESS;
     }
@@ -681,30 +700,41 @@ static int generate_system_masks(Bitset *masks, const char *type,
   return EXIT_FAILURE;
 }
 
+static uint32_t storage_hash(const void *storage_ptr) {
+  const struct storage *storage = *(const struct storage **)storage_ptr;
+  return bitset_hash(&storage->mask);
+}
+
+static int storage_eql(const void *a_ptr, const void *b_ptr) {
+  const struct storage *a = *(const struct storage **)a_ptr;
+  const struct storage *b = *(const struct storage **)b_ptr;
+  return bitset_eql(&a->mask, &b->mask);
+}
+
 static int system_init(World *w, struct system *result, SystemDesc *desc) {
   *result = (struct system){0};
-
-  // Loop through all existing systems to ensure that there is not already a
-  // system registered with the same identifier
-  SystemDesc *systems = w->systems.data;
-  for (size_t i = 0; i < vector_len(&w->systems); i++)
-    if (strcmp(systems[i].identifier, desc->identifier) == 0) {
-
-      fprintf(stderr, "%s(): System with identifier already registered(%s).\n",
-              __func__, desc->identifier);
-      return EXIT_FAILURE;
-    }
 
   result->identifier = strdup(desc->identifier);
   if (!result->identifier)
     return EXIT_FAILURE;
 
+  if (hash_map_has(&w->systems, &result->identifier)) {
+    fprintf(stderr, "%s(): System with identifier already registered(%s).\n",
+            __func__, desc->identifier);
+    free(result->identifier);
+    return EXIT_FAILURE;
+  }
+
   {
     // Allocate memory for the `types` array.
-    size_t capacity = count_types(desc->requirements) * sizeof(int32_t);
-    result->types = calloc(capacity, sizeof(int32_t));
+    size_t capacity = count_char(desc->requirements, ',') + 1;
+    // Remove types which are prefixed with an exclamation mark
+    capacity -= count_char(desc->requirements, '!');
+    result->types = malloc(capacity * sizeof(int32_t));
     if (!result->types)
       goto err;
+
+    result->types_len = capacity;
   }
 
   {
@@ -714,6 +744,10 @@ static int system_init(World *w, struct system *result, SystemDesc *desc) {
         bitset_init(&result->must_not_have, registered_type_count))
       goto err;
   }
+
+  if (hash_map_init(&result->storages, storage_hash, storage_eql,
+                    sizeof(struct storage *), 0))
+    goto err;
 
   {
     // Create an array with both masks to pass into `populate_mask()`
@@ -726,12 +760,23 @@ static int system_init(World *w, struct system *result, SystemDesc *desc) {
       goto err;
   }
 
+  result->fn = desc->fn;
+
   return EXIT_SUCCESS;
 
 err:
   system_deinit(result);
 
   return EXIT_FAILURE;
+}
+
+static uint32_t str_hash(const void *str_ptr) {
+  return fnv1a_32_hash(*(const uint8_t **)str_ptr,
+                       strlen(*(const char **)str_ptr) + 1);
+}
+
+static int str_eql(const void *a, const void *b) {
+  return strcmp(*(const char **)a, *(const char **)b) == 0;
 }
 
 World *cig_world_init() {
@@ -746,7 +791,8 @@ World *cig_world_init() {
                     sizeof(struct storage)))
     goto err;
 
-  if (vector_init(&result->systems, sizeof(struct system)))
+  if (hash_map_init(&result->systems, str_hash, str_eql, sizeof(char *),
+                    sizeof(struct system)))
     goto err;
 
   if (vector_init(&result->entities, sizeof(struct entity_internal)))
@@ -777,10 +823,11 @@ void cig_world_deinit(World *w) {
     storage_deinit((struct storage *)next->value);
   hash_map_deinit(&w->storages);
 
-  struct system *systems = w->systems.data;
-  for (size_t i = 0; i < vector_len(&w->systems); i++)
-    system_deinit(&systems[i]);
-  vector_deinit(&w->systems);
+  it = hash_map_iter(&w->systems);
+  while ((next = hash_map_next(&it)))
+    system_deinit((struct system *)next->value);
+
+  hash_map_deinit(&w->systems);
 
   vector_deinit(&w->entities);
   vector_deinit(&w->unassigned);
@@ -827,18 +874,84 @@ int cig_world_register_type(World *w, TypeDesc *desc) {
   return EXIT_SUCCESS;
 }
 
-static void system_find_matches(World *w, struct system *system) {
-  HashMapIterator iter = hash_map_iter(&w->storages);
+static int system_find_matches(World *w, struct system *system) {
+  HashMapIterator it = hash_map_iter(&w->storages);
   const HashMapKV *kv;
-  while ((kv = hash_map_next(&iter))) {
-    if (!is_match(((struct storage *)kv->value)->mask, system->must_have,
-                  system->must_not_have))
+  while ((kv = hash_map_next(&it))) {
+    struct storage *storage = kv->value;
+    if (!is_match(storage->mask, system->must_have, system->must_not_have))
       continue;
 
-    if (hash_map_put(&system->storages, kv->value, NULL) ||
-        hash_map_put(&((struct storage *)kv->value)->systems, system, NULL)) {
-    }
+    if (hash_map_put(&system->storages, &storage, NULL) ||
+        hash_map_put(&storage->systems, &system, NULL))
+      goto err;
+
+#ifdef DEBUG
+    printf("%s(): System (%s) matched with storage.\n", __func__,
+           system->identifier);
+#endif
   }
+  return EXIT_SUCCESS;
+
+err:
+  // Reset the iterator back to the first kv
+  it = hash_map_iter(it.map);
+  const HashMapKV *target = kv;
+  while ((kv = hash_map_next(&it))) {
+    struct storage *storage = kv->value;
+    hash_map_delete(&system->storages, storage);
+    hash_map_delete(&storage->systems, system);
+
+    if (kv == target)
+      break;
+  }
+
+  return EXIT_FAILURE;
+}
+
+static int system_run(const struct system *system, double delta_time) {
+  // TODO For each storage that the system has matched with, generate an array
+  // of offsets, and for each chunk in that storage, iterate through each family
+  // of types, call the system's function with the pointer to the family
+  HashMapIterator it = hash_map_iter(&system->storages);
+  const HashMapKV *kv;
+  while ((kv = hash_map_next(&it))) {
+    struct storage *storage = *(struct storage **)kv->key;
+
+    // TODO Rather than allocate and free the array every time, we can allocate
+    // once in `system_init()`
+    //
+    // Generate the offsets array
+    size_t *offsets = malloc(sizeof(size_t) * system->types_len);
+    if (!offsets) {
+      return EXIT_FAILURE;
+    }
+
+    for (size_t i = 0; i < system->types_len; i++) {
+      int32_t id = system->types[i];
+      offsets[i] = storage->layout.types[id].offset;
+    }
+
+#ifdef DEBUG
+    for (size_t i = 0; i < system->types_len; i++)
+      printf("offset: %zu\n", offsets[i]);
+#endif
+
+    LinkedListNode *next = storage->regions.first;
+    if (next) {
+      do {
+        struct region *region = next->data;
+        for (size_t i = 0; i < region->count; i++) {
+          const size_t offset = storage->layout.family_size * i;
+          system->fn(region->ptr + offset, delta_time);
+        }
+      } while ((next = next->next));
+    }
+
+    free(offsets);
+  }
+
+  return EXIT_SUCCESS;
 }
 
 int cig_world_register_system(World *w, SystemDesc *desc) {
@@ -846,12 +959,16 @@ int cig_world_register_system(World *w, SystemDesc *desc) {
   if (system_init(w, &system, desc))
     return EXIT_FAILURE;
 
-  if (vector_append(&w->systems, &system)) {
+  if (hash_map_put(&w->systems, &system.identifier, &system)) {
     system_deinit(&system);
     return EXIT_FAILURE;
   }
 
-  system_find_matches(w, &system);
+  if (system_find_matches(w, &system)) {
+    hash_map_delete(&w->systems, &system.identifier);
+    system_deinit(&system);
+    return EXIT_FAILURE;
+  }
 
 #ifdef DEBUG
   printf("%s(): System registered (%s).\n", __func__, desc->identifier);
@@ -944,7 +1061,7 @@ const Entity *cig_world_spawn(World *w, size_t count, const char *types_str) {
   assert(w != NULL);
   assert(types_str != NULL);
 
-  size_t types_count = count_types(types_str);
+  size_t types_count = count_char(types_str, ',') + 1;
 
   Entity *result = realloc(w->last_spawned, sizeof(Entity) * count);
   if (!result)
@@ -1059,4 +1176,23 @@ void *cig_get_component(const World *w, const Entity e, const char *type_str) {
 #endif
 
   return e_internal->ptr + offset;
+}
+
+int cig_world_run(const World *w, const char *identifier, double delta_time) {
+  assert(w != NULL);
+  assert(identifier != NULL);
+
+  const struct system *system = hash_map_get_value(&w->systems, &identifier);
+  if (!system) {
+    fprintf(stderr,
+            "%s(): There is no system registered with the identifier (%s).\n",
+            __func__, identifier);
+    return EXIT_FAILURE;
+  }
+
+#ifdef DEBUG
+  printf("%s(): Running system (%s).\n", __func__, identifier);
+#endif
+
+  return system_run(system, delta_time);
 }

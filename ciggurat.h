@@ -26,5 +26,7 @@ int cig_world_register_type(World *w, TypeDesc *desc);
 int cig_world_register_system(World *w, SystemDesc *desc);
 const Entity *cig_world_spawn(World *w, size_t count, const char *types);
 void *cig_get_component(const World *w, const Entity e, const char *type_str);
+int cig_world_run(const World *w, const char *identifier, double delta_time);
+int cig_world_step(const World *w, double delta_time);
 
 #endif
