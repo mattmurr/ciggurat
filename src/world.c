@@ -770,6 +770,7 @@ err:
   return EXIT_FAILURE;
 }
 
+// TODO Should this go into mylib hash module?
 static uint32_t str_hash(const void *str_ptr) {
   return fnv1a_32_hash(*(const uint8_t **)str_ptr,
                        strlen(*(const char **)str_ptr) + 1);
@@ -910,9 +911,7 @@ err:
 }
 
 static int system_run(const struct system *system, double delta_time) {
-  // TODO For each storage that the system has matched with, generate an array
-  // of offsets, and for each chunk in that storage, iterate through each family
-  // of types, call the system's function with the pointer to the family
+  // Loop through the storages that have been matched with the system
   HashMapIterator it = hash_map_iter(&system->storages);
   const HashMapKV *kv;
   while ((kv = hash_map_next(&it))) {
@@ -934,7 +933,7 @@ static int system_run(const struct system *system, double delta_time) {
 
 #ifdef DEBUG
     for (size_t i = 0; i < system->types_len; i++)
-      printf("offset: %zu\n", offsets[i]);
+      printf("id: %i, offset: %zu\n", system->types[i], offsets[i]);
 #endif
 
     LinkedListNode *next = storage->regions.first;
@@ -1195,4 +1194,21 @@ int cig_world_run(const World *w, const char *identifier, double delta_time) {
 #endif
 
   return system_run(system, delta_time);
+}
+
+int cig_world_step(const World *w, double delta_time) {
+  assert(w != NULL);
+
+  HashMapIterator it = hash_map_iter(&w->systems);
+  HashMapKV *kv;
+  while ((kv = hash_map_next(&it))) {
+#ifdef DEBUG
+    printf("%s(): Running system (%s).\n", __func__, *(char **)kv->key);
+#endif
+
+    if (system_run(kv->value, delta_time))
+      return EXIT_FAILURE;
+  }
+
+  return EXIT_SUCCESS;
 }

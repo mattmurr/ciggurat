@@ -19,7 +19,9 @@ int main() {
   assert(!cig_world_register_type(w, &short_desc));
 
   SystemDesc test_system_desc = {"test", "char, int", .fn = test};
+  SystemDesc test2_system_desc = {"test2", "int, float, short", .fn = test};
   assert(!cig_world_register_system(w, &test_system_desc));
+  assert(!cig_world_register_system(w, &test2_system_desc));
 
   const Entity *e = cig_world_spawn(w, 10000, "int, char, float, short");
 
@@ -35,6 +37,7 @@ int main() {
   assert(*((int *)cig_get_component(w, e[1], "int")) == 65);
 
   assert(!cig_world_run(w, "test", 0));
+  assert(!cig_world_step(w, 0));
 
   cig_world_deinit(w);
   return EXIT_SUCCESS;
