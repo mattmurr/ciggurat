@@ -108,28 +108,34 @@ struct system {
   // Contains storages that have matched with this system
   HashMap storages;
 
-  SystemFn fn;
+  CigSystemFunc func;
 };
 
-typedef struct World {
-  // Contains `TypeDesc`.
+typedef struct CigWorld {
+  // Contains `TypeDesc`
   Vector types;
-  // Holds the storage for each used combination of types.
+  // Holds the storage for each used combination of types
   HashMap storages;
-  // Holds all of the registered systems.
+  // Holds all of the registered systems
   HashMap systems;
 
-  // Keep track of the next Entity ID to use.
-  Entity next_entity;
-  // Contains `struct entity_internal`.
+  // Keep track of the next Entity ID to use
+  CigEntity next_entity;
+  // Contains `struct entity_internal`
   Vector entities;
   // Contains `Entity`
   Vector unassigned;
-  // Runtime allocated array of the last entities that were spawned.
-  Entity *last_spawned;
-} World;
+  // Runtime allocated array of the last entities that were spawned
+  CigEntity *last_spawned;
+} CigWorld;
 
-// TODO Aligned alloc
+typedef struct CigSystemCtx {
+  // Pointer to the components
+  void *ptr;
+  // The offsets for types being operated on
+  const size_t *offsets;
+} CigSystemCtx;
+
 static int region_init(struct region *result, size_t alignment) {
   *result = (struct region){0};
   // TODO The allocation size can be less depending on the family_size
@@ -144,18 +150,20 @@ static void region_deinit(struct region *region) {
   free(region->ptr);
 }
 
-static const TypeDesc *get_type(World *w, int32_t id) {
+static const CigTypeDesc *get_type(CigWorld *w, int32_t id) {
   return vector_get_const(&w->types, id);
 }
 
-static size_t get_size(World *w, int32_t id) { return get_type(w, id)->size; }
+static size_t get_size(CigWorld *w, int32_t id) {
+  return get_type(w, id)->size;
+}
 
-static size_t get_alignment(World *w, int32_t id) {
+static size_t get_alignment(CigWorld *w, int32_t id) {
   return get_type(w, id)->alignment;
 }
 
-static int32_t get_id(const World *w, const char *type_str) {
-  TypeDesc *types = w->types.data;
+static int32_t get_id(const CigWorld *w, const char *type_str) {
+  CigTypeDesc *types = w->types.data;
   for (size_t i = 0; i < vector_len(&w->types); i++)
     if (strcmp(types[i].identifier, type_str) == 0)
       return i;
@@ -168,7 +176,7 @@ static int32_t get_id(const World *w, const char *type_str) {
   return -1;
 }
 
-static int calculate_layout(World *w, struct storage_layout *layout,
+static int calculate_layout(CigWorld *w, struct storage_layout *layout,
                             Bitset mask) {
 
   *layout = (struct storage_layout){0};
@@ -272,7 +280,7 @@ static int system_eql(const void *a_ptr, const void *b_ptr) {
   return strcmp(a->identifier, b->identifier) == 0;
 }
 
-static int storage_init(World *w, struct storage *result, Bitset mask) {
+static int storage_init(CigWorld *w, struct storage *result, Bitset mask) {
   *result = (struct storage){0};
 
   result->regions = linked_list_init();
@@ -337,7 +345,7 @@ static int is_match(const Bitset mask, const Bitset must_have,
          bitset_is_subset(&must_have, &mask);
 }
 
-static int storage_find_matches(World *w, struct storage *storage) {
+static int storage_find_matches(CigWorld *w, struct storage *storage) {
   HashMapIterator it = hash_map_iter(&w->systems);
   const HashMapKV *kv;
   while ((kv = hash_map_next(&it))) {
@@ -373,7 +381,7 @@ err:
   return EXIT_FAILURE;
 }
 
-static struct storage *get_storage(World *w, Bitset mask) {
+static struct storage *get_storage(CigWorld *w, Bitset mask) {
   int has_existing;
   const HashMapKV *kv = hash_map_get_or_put(&w->storages, &mask, &has_existing);
 
@@ -621,9 +629,9 @@ err:
   return NULL; // Return zero, indicating an empty result.
 }
 
-static int populate_mask(World *w, Bitset *mask,
-                         int (*f)(Bitset *, const char *, const char *, int32_t,
-                                  void *),
+static int populate_mask(CigWorld *w, Bitset *mask,
+                         int (*func)(Bitset *, const char *, const char *,
+                                     int32_t, void *),
                          const char *types_str, void *e) {
   // If tokens are not already initialized then we will tokenize and return.
   size_t size = 0;
@@ -643,11 +651,11 @@ static int populate_mask(World *w, Bitset *mask,
             __func__, types_str);
 
   } else {
-    TypeDesc *types = w->types.data;
+    CigTypeDesc *types = w->types.data;
     for (size_t i = 0; i < size; i++) {
       for (size_t j = 0; j < vector_len(&w->types); j++)
-        // Call the `f` function pointer to generate the mask/s
-        if (!f(mask, types[j].identifier, tokens[i], j, e))
+        // Call the `func` function pointer to generate the mask/s
+        if (!func(mask, types[j].identifier, tokens[i], j, e))
           goto next;
 
       result = EXIT_FAILURE;
@@ -711,7 +719,8 @@ static int storage_eql(const void *a_ptr, const void *b_ptr) {
   return bitset_eql(&a->mask, &b->mask);
 }
 
-static int system_init(World *w, struct system *result, SystemDesc *desc) {
+static int system_init(CigWorld *w, struct system *result,
+                       CigSystemDesc *desc) {
   *result = (struct system){0};
 
   result->identifier = strdup(desc->identifier);
@@ -760,7 +769,7 @@ static int system_init(World *w, struct system *result, SystemDesc *desc) {
       goto err;
   }
 
-  result->fn = desc->fn;
+  result->func = desc->func;
 
   return EXIT_SUCCESS;
 
@@ -780,12 +789,12 @@ static int str_eql(const void *a, const void *b) {
   return strcmp(*(const char **)a, *(const char **)b) == 0;
 }
 
-World *cig_world_init() {
-  World *result = calloc(1, sizeof(World));
+CigWorld *cig_world_init() {
+  CigWorld *result = calloc(1, sizeof(CigWorld));
   if (!result)
     return NULL;
 
-  if (vector_init(&result->types, sizeof(TypeDesc)))
+  if (vector_init(&result->types, sizeof(CigTypeDesc)))
     goto err;
 
   if (hash_map_init(&result->storages, bitset_hash, bitset_eql, sizeof(Bitset),
@@ -799,7 +808,7 @@ World *cig_world_init() {
   if (vector_init(&result->entities, sizeof(struct entity_internal)))
     goto err;
 
-  if (vector_init(&result->unassigned, sizeof(Entity)))
+  if (vector_init(&result->unassigned, sizeof(CigEntity)))
     goto err;
 
   return result;
@@ -809,11 +818,11 @@ err:
   return NULL;
 }
 
-void cig_world_deinit(World *w) {
+void cig_world_deinit(CigWorld *w) {
   if (w == NULL)
     return;
 
-  TypeDesc *types = w->types.data;
+  CigTypeDesc *types = w->types.data;
   for (size_t i = 0; i < vector_len(&w->types); i++)
     free(types[i].identifier);
   vector_deinit(&w->types);
@@ -838,7 +847,7 @@ void cig_world_deinit(World *w) {
 }
 
 static size_t find_type(const Vector *types, const char *identifier) {
-  TypeDesc *arr = types->data;
+  CigTypeDesc *arr = types->data;
   size_t len = vector_len(types);
   for (size_t i = 0; i < len; i++)
     if (strcmp(arr[i].identifier, identifier) == 0)
@@ -847,7 +856,7 @@ static size_t find_type(const Vector *types, const char *identifier) {
   return len;
 }
 
-int cig_world_register_type(World *w, TypeDesc *desc) {
+int cig_world_register_type(CigWorld *w, CigTypeDesc *desc) {
   assert(w != NULL);
   assert(desc != NULL);
 
@@ -865,8 +874,8 @@ int cig_world_register_type(World *w, TypeDesc *desc) {
     vector_delete(&w->types, vector_len(&w->types) - 1);
     return EXIT_FAILURE;
   }
-  ((TypeDesc *)vector_get(&w->types, vector_len(&w->types) - 1))->identifier =
-      identifier;
+  ((CigTypeDesc *)vector_get(&w->types, vector_len(&w->types) - 1))
+      ->identifier = identifier;
 
 #ifdef DEBUG
   printf("%s(): Type registered (%s).\n", __func__, desc->identifier);
@@ -875,7 +884,7 @@ int cig_world_register_type(World *w, TypeDesc *desc) {
   return EXIT_SUCCESS;
 }
 
-static int system_find_matches(World *w, struct system *system) {
+static int system_find_matches(CigWorld *w, struct system *system) {
   HashMapIterator it = hash_map_iter(&w->storages);
   const HashMapKV *kv;
   while ((kv = hash_map_next(&it))) {
@@ -931,18 +940,15 @@ static int system_run(const struct system *system, double delta_time) {
       offsets[i] = storage->layout.types[id].offset;
     }
 
-#ifdef DEBUG
-    for (size_t i = 0; i < system->types_len; i++)
-      printf("id: %i, offset: %zu\n", system->types[i], offsets[i]);
-#endif
-
     LinkedListNode *next = storage->regions.first;
     if (next) {
       do {
         struct region *region = next->data;
         for (size_t i = 0; i < region->count; i++) {
           const size_t offset = storage->layout.family_size * i;
-          system->fn(region->ptr + offset, delta_time);
+          CigSystemCtx ctx =
+              (CigSystemCtx){.ptr = region->ptr + offset, .offsets = offsets};
+          system->func(&ctx, delta_time);
         }
       } while ((next = next->next));
     }
@@ -953,7 +959,7 @@ static int system_run(const struct system *system, double delta_time) {
   return EXIT_SUCCESS;
 }
 
-int cig_world_register_system(World *w, SystemDesc *desc) {
+int cig_world_register_system(CigWorld *w, CigSystemDesc *desc) {
   struct system system;
   if (system_init(w, &system, desc))
     return EXIT_FAILURE;
@@ -986,7 +992,8 @@ static int generate_entity_mask(Bitset *mask, const char *type,
   return EXIT_FAILURE;
 }
 
-static size_t get_offset(const World *w, struct storage *storage, int32_t id) {
+static size_t get_offset(const CigWorld *w, struct storage *storage,
+                         int32_t id) {
   // Iterate the storage's layout to find the id
   for (int32_t i = 0; i < storage->layout.count; i++)
     if (id == storage->layout.types[i].id)
@@ -999,7 +1006,7 @@ static size_t get_offset(const World *w, struct storage *storage, int32_t id) {
   return -1;
 }
 
-static int assign_regions(World *w, struct storage *storage, Bitset mask,
+static int assign_regions(CigWorld *w, struct storage *storage, Bitset mask,
                           size_t count) {
   struct storage_regions_request request;
   if (storage_request_regions(storage, &request, count))
@@ -1056,13 +1063,14 @@ err:
   return EXIT_FAILURE;
 }
 
-const Entity *cig_world_spawn(World *w, size_t count, const char *types_str) {
+const CigEntity *cig_world_spawn(CigWorld *w, size_t count,
+                                 const char *types_str) {
   assert(w != NULL);
   assert(types_str != NULL);
 
   size_t types_count = count_char(types_str, ',') + 1;
 
-  Entity *result = realloc(w->last_spawned, sizeof(Entity) * count);
+  CigEntity *result = realloc(w->last_spawned, sizeof(CigEntity) * count);
   if (!result)
     return NULL;
 
@@ -1085,7 +1093,7 @@ const Entity *cig_world_spawn(World *w, size_t count, const char *types_str) {
   // Take as many entities as possible from world->recycled first
   while (new_unassigned_count > 0)
     result[i++] =
-        *((Entity *)vector_get(&w->unassigned, --new_unassigned_count));
+        *((CigEntity *)vector_get(&w->unassigned, --new_unassigned_count));
 
   // Make space for the new entities
   if (vector_resize(&w->entities, count - i))
@@ -1129,7 +1137,8 @@ err:
   return NULL;
 }
 
-void *cig_get_component(const World *w, const Entity e, const char *type_str) {
+void *cig_world_get_component(const CigWorld *w, const CigEntity e,
+                              const char *type_str) {
   assert(w != NULL);
   assert(type_str != NULL);
 
@@ -1177,7 +1186,8 @@ void *cig_get_component(const World *w, const Entity e, const char *type_str) {
   return e_internal->ptr + offset;
 }
 
-int cig_world_run(const World *w, const char *identifier, double delta_time) {
+int cig_world_run(const CigWorld *w, const char *identifier,
+                  double delta_time) {
   assert(w != NULL);
   assert(identifier != NULL);
 
@@ -1196,7 +1206,7 @@ int cig_world_run(const World *w, const char *identifier, double delta_time) {
   return system_run(system, delta_time);
 }
 
-int cig_world_step(const World *w, double delta_time) {
+int cig_world_step(const CigWorld *w, double delta_time) {
   assert(w != NULL);
 
   HashMapIterator it = hash_map_iter(&w->systems);
@@ -1211,4 +1221,9 @@ int cig_world_step(const World *w, double delta_time) {
   }
 
   return EXIT_SUCCESS;
+}
+
+void *cig_system_get_component(const CigSystemCtx *ctx, size_t idx) {
+  assert(ctx != NULL);
+  return ctx->ptr + ctx->offsets[idx];
 }
