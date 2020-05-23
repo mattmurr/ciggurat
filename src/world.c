@@ -109,6 +109,9 @@ struct system {
   HashMap storages;
 
   CigSystemFunc func;
+
+  // An array of offsets to be set running the system
+  size_t *offsets;
 };
 
 typedef struct CigWorld {
@@ -334,6 +337,7 @@ static void system_deinit(struct system *system) {
   bitset_deinit(&system->must_not_have);
   bitset_deinit(&system->must_have);
 
+  free(system->offsets);
   free(system->types);
 
   free(system->identifier);
@@ -739,8 +743,13 @@ static int system_init(CigWorld *w, struct system *result,
     size_t capacity = count_char(desc->requirements, ',') + 1;
     // Remove types which are prefixed with an exclamation mark
     capacity -= count_char(desc->requirements, '!');
+
     result->types = malloc(capacity * sizeof(int32_t));
     if (!result->types)
+      goto err;
+
+    result->offsets = calloc(capacity, sizeof(size_t));
+    if (!result->offsets)
       goto err;
 
     result->types_len = capacity;
@@ -926,18 +935,9 @@ static int system_run(const struct system *system, double delta_time) {
   while ((kv = hash_map_next(&it))) {
     struct storage *storage = *(struct storage **)kv->key;
 
-    // TODO Rather than allocate and free the array every time, we can allocate
-    // once in `system_init()`
-    //
-    // Generate the offsets array
-    size_t *offsets = malloc(sizeof(size_t) * system->types_len);
-    if (!offsets) {
-      return EXIT_FAILURE;
-    }
-
     for (size_t i = 0; i < system->types_len; i++) {
       int32_t id = system->types[i];
-      offsets[i] = storage->layout.types[id].offset;
+      system->offsets[i] = storage->layout.types[id].offset;
     }
 
     LinkedListNode *next = storage->regions.first;
@@ -946,14 +946,12 @@ static int system_run(const struct system *system, double delta_time) {
         struct region *region = next->data;
         for (size_t i = 0; i < region->count; i++) {
           const size_t offset = storage->layout.family_size * i;
-          CigSystemCtx ctx =
-              (CigSystemCtx){.ptr = region->ptr + offset, .offsets = offsets};
+          CigSystemCtx ctx = (CigSystemCtx){.ptr = region->ptr + offset,
+                                            .offsets = system->offsets};
           system->func(&ctx, delta_time);
         }
       } while ((next = next->next));
     }
-
-    free(offsets);
   }
 
   return EXIT_SUCCESS;

@@ -29,7 +29,8 @@ int main() {
   assert(!cig_world_register_system(w, &test2_system_desc));
 
   {
-    const CigEntity *e = cig_world_spawn(w, 1000, "int, char, float, short");
+    const CigEntity *e =
+        cig_world_spawn(w, 10000000, "int, char, float, short");
 
     {
       float *f = cig_world_get_component(w, e[0], "float");
@@ -54,7 +55,7 @@ int main() {
 
   float t, n;
   t = (float)clock() / CLOCKS_PER_SEC;
-  for (int i = 0; i < 100; i++) {
+  for (int i = 0; i < 5; i++) {
     assert(!cig_world_step(w, 0));
     n = (float)clock() / CLOCKS_PER_SEC;
     printf("World step took %f seconds.\n", n - t);
