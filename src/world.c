@@ -337,6 +337,8 @@ static void system_deinit(struct system *system) {
   bitset_deinit(&system->must_not_have);
   bitset_deinit(&system->must_have);
 
+  hash_map_deinit(&system->storages);
+
   free(system->offsets);
   free(system->types);
 
