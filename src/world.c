@@ -110,6 +110,8 @@ struct system {
 
   CigSystemFunc func;
 
+  void *user_data;
+
   // An array of offsets to be set running the system
   size_t *offsets;
 };
@@ -137,6 +139,8 @@ typedef struct CigSystemCtx {
   void *ptr;
   // The offsets for types being operated on
   const size_t *offsets;
+
+  void *user_data;
 } CigSystemCtx;
 
 static int region_init(struct region *result, size_t alignment) {
@@ -781,6 +785,7 @@ static int system_init(CigWorld *w, struct system *result,
   }
 
   result->func = desc->func;
+  result->user_data = desc->user_data;
 
   return EXIT_SUCCESS;
 
@@ -931,6 +936,8 @@ err:
 }
 
 static int system_run(const struct system *system, double delta_time) {
+  CigSystemCtx ctx = (CigSystemCtx){.offsets = system->offsets,
+                                    .user_data = system->user_data};
   // Loop through the storages that have been matched with the system
   HashMapIterator it = hash_map_iter(&system->storages);
   const HashMapKV *kv;
@@ -948,8 +955,7 @@ static int system_run(const struct system *system, double delta_time) {
         struct region *region = next->data;
         for (size_t i = 0; i < region->count; i++) {
           const size_t offset = storage->layout.family_size * i;
-          CigSystemCtx ctx = (CigSystemCtx){.ptr = region->ptr + offset,
-                                            .offsets = system->offsets};
+          ctx.ptr = region->ptr + offset;
           system->func(&ctx, delta_time);
         }
       } while ((next = next->next));
@@ -1226,4 +1232,8 @@ int cig_world_step(const CigWorld *w, double delta_time) {
 void *cig_system_get_component(const CigSystemCtx *ctx, size_t idx) {
   assert(ctx != NULL);
   return ctx->ptr + ctx->offsets[idx];
+}
+
+void *cig_system_get_user_data(const CigSystemCtx *ctx) {
+  return ctx->user_data;
 }

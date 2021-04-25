@@ -19,6 +19,7 @@ typedef struct CigSystemDesc {
   char *identifier;
   char *requirements;
   CigSystemFunc func;
+  void *user_data;
 } CigSystemDesc;
 
 void cig_world_deinit(CigWorld *w);
@@ -32,5 +33,6 @@ int cig_world_run(const CigWorld *w, const char *identifier, double delta_time);
 int cig_world_step(const CigWorld *w, double delta_time);
 
 void *cig_system_get_component(const CigSystemCtx *ctx, size_t idx);
+void *cig_system_get_user_data(const CigSystemCtx *ctx);
 
 #endif
