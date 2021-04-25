@@ -1096,7 +1096,7 @@ const CigEntity *cig_world_spawn(CigWorld *w, size_t count,
         *((CigEntity *)vector_get(&w->unassigned, --new_unassigned_count));
 
   // Make space for the new entities
-  if (vector_resize(&w->entities, count - i))
+  if (vector_resize(&w->entities, vector_len(&w->entities) + (count - i)))
     goto err;
 
   struct entity_internal e = {0};
