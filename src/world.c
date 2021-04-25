@@ -934,6 +934,8 @@ err:
 }
 
 static int system_run(const struct system *system, double delta_time) {
+  CigSystemCtx ctx = (CigSystemCtx){.offsets = system->offsets,
+                                    .user_data = system->user_data};
   // Loop through the storages that have been matched with the system
   HashMapIterator it = hash_map_iter(&system->storages);
   const HashMapKV *kv;
@@ -951,9 +953,7 @@ static int system_run(const struct system *system, double delta_time) {
         struct region *region = next->data;
         for (size_t i = 0; i < region->count; i++) {
           const size_t offset = storage->layout.family_size * i;
-          CigSystemCtx ctx = (CigSystemCtx){.ptr = region->ptr + offset,
-                                            .offsets = system->offsets,
-                                            .user_data = system->user_data};
+          ctx.ptr = region->ptr + offset;
           system->func(&ctx, delta_time);
         }
       } while ((next = next->next));
